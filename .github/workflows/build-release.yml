@@ -42,14 +42,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
+          # 版本不存在时 gh 退出码为 1，这里只把它当作判断依据，不能让它变成步骤失败。
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            "exists=true" >> $env:GITHUB_OUTPUT
+          $exists = ($LASTEXITCODE -eq 0)
+          "exists=$($exists.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if ($exists) {
             Write-Host "Release $tag 已存在，跳过本次编译。"
           } else {
-            "exists=false" >> $env:GITHUB_OUTPUT
             Write-Host "将发布 $tag。"
           }
+          exit 0
 
       - name: 编译 Release x64
         if: steps.check.outputs.exists != 'true'
@@ -137,6 +139,8 @@ jobs:
           - 这是上游项目源码的 fork 构建，非官方发布；上游源码采用 GPL-3.0-only，再分发请遵守该许可证及其对原版素材的说明。
           - 编译产物按现状提供，不附带任何保证。
           "@ | Set-Content -Path dist/RELEASE_NOTES.md -Encoding utf8
+          # 首次发布时 gh release list 会以非零码退出，不能让它影响步骤结果。
+          exit 0
 
       - name: 发布 Release
         if: steps.check.outputs.exists != 'true'
