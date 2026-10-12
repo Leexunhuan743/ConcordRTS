@@ -72,7 +72,8 @@ jobs:
 
           $stage = "dist/ConcordRTS-$tag"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item bin/* $stage -Recurse
+          # 保留 bin/ 目录结构，解压后与仓库内的启动方式一致（README 里的 .\bin\concord_runtime.exe）。
+          Copy-Item bin -Destination $stage -Recurse
           Copy-Item README.md, LICENSE $stage
 
           Get-ChildItem $stage -Recurse -File |
@@ -82,7 +83,7 @@ jobs:
           $zip = "dist/ConcordRTS-$tag-win64.zip"
           Compress-Archive -Path $stage -DestinationPath $zip -Force
 
-          "$zip  $((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower())" |
+          "$(Split-Path $zip -Leaf)  $((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower())" |
             Set-Content -Path dist/SHA256SUMS.txt -Encoding utf8
           "zip=$zip" >> $env:GITHUB_OUTPUT
 
@@ -104,7 +105,7 @@ jobs:
             $log = (git log -30 --pretty=format:'- %h %s') -join "`n"
           } else {
             $range = "$previous..HEAD"
-            $rangeLabel = "（\`$previous\` → \`$tag\`）"
+            $rangeLabel = '（`{0}` → `{1}`）' -f $previous, $tag
             $log = (git log $range --pretty=format:'- %h %s') -join "`n"
           }
           if ([string]::IsNullOrWhiteSpace($log)) { $log = "- $sha 无新增提交" }
@@ -129,14 +130,14 @@ jobs:
 
           ## 压缩包内容
 
-          ``ConcordRTS-$tag-win64.zip`` 解压后包含：
+          ``ConcordRTS-$tag-win64.zip`` 解压后得到 ``ConcordRTS-$tag/`` 目录：
 
           - ``bin/concord_runtime.exe``：游戏核心（64 位）
           - ``bin/BinkFrameExtractor.exe``：视频桥接工具（32 位）
-          - ``bin/msvcp140*.dll``、``bin/vcruntime140*.dll``：Visual Studio 运行库
+          - ``bin/msvcp140*.dll``、``bin/vcruntime140*.dll``：Visual Studio 运行库，与 exe 同目录
           - ``README.md``、``LICENSE``
 
-          SHA-256 校验值见 ``SHA256SUMS.txt``。源码与示例（``samples/``、``tests/``）请使用 Release 页面自动生成的源码压缩包。
+          ``SHA256SUMS.txt`` 是该 zip 的 SHA-256 校验值。启动方式和参数见 ``README.md``；源码与示例（``samples/``、``tests/``）请使用 Release 页面自动生成的源码压缩包。
 
           ## 使用与声明
 
@@ -164,14 +165,16 @@ jobs:
 
       - name: 汇总
         if: always()
+        shell: pwsh
         run: |
-          {
-            echo "### 编译与发布"
-            echo ""
-            echo "| 项 | 值 |"
-            echo "| --- | --- |"
-            echo "| 版本 | \`${{ steps.version.outputs.tag }}\` |"
-            echo "| 提交 | \`${{ steps.version.outputs.full_sha }}\` |"
-            echo "| 该提交已发布过 | ${{ steps.check.outputs.exists == 'true' && '是' || '否' }} |"
-            echo "| 触发方式 | ${{ github.event_name }} |"
-          } >> $env:GITHUB_STEP_SUMMARY
+          $summary = @(
+            '### 编译与发布'
+            ''
+            '| 项 | 值 |'
+            '| --- | --- |'
+            "| 版本 | ``${{ steps.version.outputs.tag }}`` |"
+            "| 提交 | ``${{ steps.version.outputs.full_sha }}`` |"
+            "| 该提交已发布过 | ${{ steps.check.outputs.exists == 'true' && '是' || '否' }} |"
+            "| 触发方式 | ${{ github.event_name }} |"
+          ) -join "`n"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
