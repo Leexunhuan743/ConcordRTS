@@ -1,0 +1,168 @@
+name: 编译并发布
+
+# main 有新提交（含上游同步产生的提交）时编译 Release x64 并发布 GitHub Release。
+# 手动运行一次会为当前 main 提交打包发布；同一提交已发布过则直接跳过。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 计算版本号
+        id: version
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse --short=7 HEAD).Trim()
+          $full = (git rev-parse HEAD).Trim()
+          $date = (Get-Date).ToUniversalTime().ToString('yyyy.MM.dd')
+          "tag=v$date-$sha" >> $env:GITHUB_OUTPUT
+          "sha=$sha"       >> $env:GITHUB_OUTPUT
+          "full_sha=$full" >> $env:GITHUB_OUTPUT
+
+      - name: 检查该提交是否已发布
+        id: check
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $tag 已存在，跳过本次编译。"
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            Write-Host "将发布 $tag。"
+          }
+
+      - name: 编译 Release x64
+        if: steps.check.outputs.exists != 'true'
+        shell: pwsh
+        run: ./tools/Build-Game.ps1
+
+      - name: 打包
+        id: package
+        if: steps.check.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          if (-not (Test-Path bin/concord_runtime.exe)) { throw '缺少 bin/concord_runtime.exe，编译未产出游戏核心。' }
+          if (-not (Test-Path bin/BinkFrameExtractor.exe)) { throw '缺少 bin/BinkFrameExtractor.exe，编译未产出视频桥接工具。' }
+
+          $stage = "dist/ConcordRTS-$tag"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item bin/* $stage -Recurse
+          Copy-Item README.md, LICENSE $stage
+
+          Get-ChildItem $stage -Recurse -File |
+            ForEach-Object { "$($_.FullName.Substring((Resolve-Path $stage).Path.Length + 1))  $($_.Length) 字节" } |
+            Sort-Object
+
+          $zip = "dist/ConcordRTS-$tag-win64.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+
+          "$zip  $((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower())" |
+            Set-Content -Path dist/SHA256SUMS.txt -Encoding utf8
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: 生成发布说明
+        if: steps.check.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $sha = "${{ steps.version.outputs.full_sha }}"
+
+          $previous = (gh release list --repo $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName') | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($previous)) {
+            $range = 'HEAD'
+            $rangeLabel = '（首次发布，列出最近 30 次提交）'
+            $log = (git log -30 --pretty=format:'- %h %s') -join "`n"
+          } else {
+            $range = "$previous..HEAD"
+            $rangeLabel = "（\`$previous\` → \`$tag\`）"
+            $log = (git log $range --pretty=format:'- %h %s') -join "`n"
+          }
+          if ([string]::IsNullOrWhiteSpace($log)) { $log = "- $sha 无新增提交" }
+
+          @"
+          C++20 RTS 引擎源码的自行编译版本，对应本仓库提交 ``$sha``。
+
+          ## 构建信息
+
+          | 项 | 值 |
+          | --- | --- |
+          | 版本 | ``$tag`` |
+          | 提交 | [$sha]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commit/$sha) |
+          | 上游仓库 | [AdrianLuo-X/ConcordRTS]($env:GITHUB_SERVER_URL/AdrianLuo-X/ConcordRTS) |
+          | 构建环境 | windows-latest，MSVC x64 Release（CMake + Visual Studio） |
+          | 构建时间（UTC） | $(Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') |
+
+          ## 本次变更
+          $rangeLabel
+
+          $log
+
+          ## 压缩包内容
+
+          ``ConcordRTS-$tag-win64.zip`` 解压后包含：
+
+          - ``bin/concord_runtime.exe``：游戏核心（64 位）
+          - ``bin/BinkFrameExtractor.exe``：视频桥接工具（32 位）
+          - ``bin/msvcp140*.dll``、``bin/vcruntime140*.dll``：Visual Studio 运行库
+          - ``README.md``、``LICENSE``
+
+          SHA-256 校验值见 ``SHA256SUMS.txt``。源码与示例（``samples/``、``tests/``）请使用 Release 页面自动生成的源码压缩包。
+
+          ## 使用与声明
+
+          - 压缩包是 Windows x64 的自行编译产物，运行前请按 ``README.md`` 准备自己的游戏数据（``RedAlert2/``、``local_data/``）；本发布不包含原版游戏程序、素材、地图或影片。
+          - 这是上游项目源码的 fork 构建，非官方发布；上游源码采用 GPL-3.0-only，再分发请遵守该许可证及其对原版素材的说明。
+          - 编译产物按现状提供，不附带任何保证。
+          "@ | Set-Content -Path dist/RELEASE_NOTES.md -Encoding utf8
+
+      - name: 发布 Release
+        if: steps.check.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          gh release create $tag `
+            --repo $env:GITHUB_REPOSITORY `
+            --target "${{ steps.version.outputs.full_sha }}" `
+            --title $tag `
+            --notes-file dist/RELEASE_NOTES.md `
+            "${{ steps.package.outputs.zip }}" `
+            dist/SHA256SUMS.txt
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### 编译与发布"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本 | \`${{ steps.version.outputs.tag }}\` |"
+            echo "| 提交 | \`${{ steps.version.outputs.full_sha }}\` |"
+            echo "| 该提交已发布过 | ${{ steps.check.outputs.exists == 'true' && '是' || '否' }} |"
+            echo "| 触发方式 | ${{ github.event_name }} |"
+          } >> $env:GITHUB_STEP_SUMMARY

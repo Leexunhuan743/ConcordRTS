@@ -1,0 +1,96 @@
+name: 同步上游
+
+# 上游仓库有新提交时把改动合入本仓库 main，然后触发“编译并发布”流程。
+# 定时检查（每天一次）+ 手动运行。
+# 本仓库相对上游只允许新增 .github/ 下的文件；一旦上下游改同一文件，
+# 合并会冲突，本次运行失败并提示人工处理，不会产生半成品提交。
+on:
+  schedule:
+    # 03:15 UTC，即北京时间 11:15。
+    # 仓库连续 60 天没有提交时 GitHub 会自动停用定时任务，届时手动运行一次即可恢复。
+    - cron: '15 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 上游没有新提交时也执行一次编译与发布
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: AdrianLuo-X/ConcordRTS
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      upstream_sha: ${{ steps.merge.outputs.upstream_sha }}
+    steps:
+      - name: 检出本仓库 main
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: 合并上游 main
+        id: merge
+        env:
+          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+
+          upstream_ref="upstream/${UPSTREAM_BRANCH}"
+          upstream_sha="$(git rev-parse "${upstream_ref}")"
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "${upstream_ref}" HEAD; then
+            echo "上游无新提交：${UPSTREAM_REPOSITORY}@${upstream_sha}"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "上游有新提交：${upstream_sha}"
+          if ! git merge --no-edit "${upstream_ref}"; then
+            git merge --abort || true
+            echo "::error::与上游合并冲突。请在本机把 ${UPSTREAM_REPOSITORY}/${UPSTREAM_BRANCH} 合入本仓库 ${TARGET_BRANCH} 并解决冲突后重新运行。"
+            exit 1
+          fi
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 触发编译与发布
+        if: steps.merge.outputs.changed == 'true' || inputs.force_build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run build-release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.event.repository.default_branch }}"
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "### 上游同步"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 上游仓库 | \`${UPSTREAM_REPOSITORY}\` (\`${UPSTREAM_BRANCH}\`) |"
+            echo "| 上游提交 | \`${{ steps.merge.outputs.upstream_sha }}\` |"
+            echo "| main 已更新 | ${{ steps.merge.outputs.changed == 'true' && '是' || '否' }} |"
+            echo "| 已触发编译发布 | ${{ (steps.merge.outputs.changed == 'true' || inputs.force_build) && '是' || '否' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
