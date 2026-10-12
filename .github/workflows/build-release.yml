@@ -94,6 +94,8 @@ jobs:
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
           $sha = "${{ steps.version.outputs.full_sha }}"
+          # git 的提交信息是 UTF-8，显式指定解码方式，避免运行器代码页不同导致中文乱码。
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 
           $previous = (gh release list --repo $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName') | Select-Object -First 1
           if ([string]::IsNullOrWhiteSpace($previous)) {
@@ -118,7 +120,7 @@ jobs:
           | 提交 | [$sha]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/commit/$sha) |
           | 上游仓库 | [AdrianLuo-X/ConcordRTS]($env:GITHUB_SERVER_URL/AdrianLuo-X/ConcordRTS) |
           | 构建环境 | windows-latest，MSVC x64 Release（CMake + Visual Studio） |
-          | 构建时间（UTC） | $(Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') |
+          | 构建时间（UTC） | $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) |
 
           ## 本次变更
           $rangeLabel
