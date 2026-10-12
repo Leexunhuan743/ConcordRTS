@@ -1,0 +1,21 @@
+name: 探针：发布权限
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 尝试创建探针 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          GH_DEBUG=api gh release create v0.0.0-probe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title probe \
+            --notes "permission probe" 2>&1 | grep -iE "x-accepted-github-permissions|x-oauth-scopes|^< HTTP|message|Created release|https://github.com" | head -20
