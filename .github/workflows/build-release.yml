@@ -5,6 +5,9 @@ name: 编译并发布
 on:
   push:
     branches: [main]
+    # 只改工作流本身的提交不产生发布；上游同步触发的 workflow_dispatch 不受此限制。
+    paths-ignore:
+      - '.github/**'
   workflow_dispatch:
 
 permissions:
